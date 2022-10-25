@@ -26,6 +26,9 @@ def buffer_decrypt(buffer, decryption_key, *, processor=None):
     if processor is not None:
         buffer = processor(buffer)
 
+    if buffer[:3] not in (b"v10", b"v11"):
+        return buffer
+
     return (
         AES.new(decryption_key, AES.MODE_GCM, buffer[3:15])
         .decrypt(buffer[15:])[:-16]

